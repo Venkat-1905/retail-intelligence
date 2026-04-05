@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pkl
+*.pt
+*.zip
+*.xlsx
+data/rossmann/
+data/online_retail.xlsx
+airflow/logs/
+airflow/airflow.db
+airflow/simple_auth_manager_passwords.json.generated
+.env
+*.egg-info/
