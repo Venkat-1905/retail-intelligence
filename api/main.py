@@ -1,4 +1,5 @@
 import sys
+import os
 import logging
 import time
 import numpy as np
@@ -11,8 +12,8 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models'))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models'))
 from lstm_forecaster import LSTMForecaster
 from api.config import (
     DB_CONFIG, MODEL_PATH, SCALER_PATH, Y_SCALER_PATH,
@@ -96,11 +97,6 @@ def get_conn():
 
 # ── Feature builder ───────────────────────────────────
 def build_sequence(store_id: int) -> np.ndarray:
-    """
-    Builds exact same 8-feature sequence used in training:
-    total_quantity, lag_1, lag_7, rolling_7,
-    avg_price, day_of_week, is_weekend, month
-    """
     conn = get_conn()
     cur  = conn.cursor()
     cur.execute("""
@@ -130,7 +126,6 @@ def build_sequence(store_id: int) -> np.ndarray:
     df["day_of_week"] = df["sale_date"].dt.dayofweek
     df["is_weekend"]  = df["day_of_week"].isin([5, 6]).astype(int)
     df["month"]       = df["sale_date"].dt.month
-
     df = df.dropna().tail(SEQ_LEN)
 
     if len(df) < SEQ_LEN:
@@ -149,8 +144,7 @@ def build_sequence(store_id: int) -> np.ndarray:
 # ── Inference helper ──────────────────────────────────
 def run_inference(sequence: np.ndarray) -> float:
     if MODEL is None or SCALER is None or Y_SCALER is None:
-        raise HTTPException(status_code=503,
-                            detail="Model not loaded")
+        raise HTTPException(status_code=503, detail="Model not loaded")
     X        = sequence.reshape(1, SEQ_LEN, INPUT_SIZE)
     N, T, F  = X.shape
     X_scaled = SCALER.transform(X.reshape(-1, F)).reshape(N, T, F)
@@ -161,11 +155,95 @@ def run_inference(sequence: np.ndarray) -> float:
         pred_scaled.reshape(-1, 1)).flatten()[0]
     return float(pred)
 
+# ── Shared forecast helper ────────────────────────────
+def _run_forecast(store_id: int, days: int):
+    """Core autoregressive forecast logic — shared by all forecast endpoints."""
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT MAX(sale_date) FROM aggregated_sales
+        WHERE store_id = %s
+    """, (store_id,))
+    last_date = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+
+    if last_date is None:
+        raise HTTPException(status_code=404,
+                            detail=f"No data for store {store_id}")
+
+    sequence    = build_sequence(store_id)
+    forecasts   = []
+    current_seq = sequence.copy()
+
+    for day in range(days):
+        pred          = run_inference(current_seq)
+        forecast_date = (pd.Timestamp(str(last_date)) +
+                         pd.Timedelta(days=int(day + 1)))
+        forecasts.append({
+            "date":             forecast_date.strftime("%Y-%m-%d"),
+            "predicted_demand": round(pred, 2),
+            "day":              day + 1,
+            "week":             (day // 7) + 1,
+            "month":            (day // 30) + 1
+        })
+        new_row     = current_seq[-1].copy()
+        new_row[0]  = pred
+        new_row[1]  = current_seq[-1][0]
+        current_seq = np.vstack([current_seq[1:], new_row])
+
+    # Weekly aggregation
+    weekly = {}
+    for f in forecasts:
+        w = f["week"]
+        if w not in weekly:
+            weekly[w] = {"week": w, "dates": [], "demands": []}
+        weekly[w]["dates"].append(f["date"])
+        weekly[w]["demands"].append(f["predicted_demand"])
+
+    weekly_summary = [
+        {
+            "week":         w,
+            "start_date":   v["dates"][0],
+            "end_date":     v["dates"][-1],
+            "avg_demand":   round(sum(v["demands"]) / len(v["demands"]), 2),
+            "total_demand": round(sum(v["demands"]), 2)
+        }
+        for w, v in weekly.items()
+    ]
+
+    # Monthly aggregation
+    monthly = {}
+    for f in forecasts:
+        m = f["month"]
+        if m not in monthly:
+            monthly[m] = {"month": m, "dates": [], "demands": []}
+        monthly[m]["dates"].append(f["date"])
+        monthly[m]["demands"].append(f["predicted_demand"])
+
+    monthly_summary = [
+        {
+            "month":        m,
+            "start_date":   v["dates"][0],
+            "end_date":     v["dates"][-1],
+            "avg_demand":   round(sum(v["demands"]) / len(v["demands"]), 2),
+            "total_demand": round(sum(v["demands"]), 2)
+        }
+        for m, v in monthly.items()
+    ]
+
+    return {
+        "last_actual_date": str(last_date),
+        "forecast_days":    days,
+        "daily_forecast":   forecasts,
+        "weekly_summary":   weekly_summary,
+        "monthly_summary":  monthly_summary
+    }
+
 # ═════════════════════════════════════════════════════
 # ENDPOINTS
 # ═════════════════════════════════════════════════════
 
-# ── General ───────────────────────────────────────────
 @app.get("/", tags=["General"])
 def root():
     return {"message": "Retail Intelligence API v2.0 ✅"}
@@ -173,12 +251,12 @@ def root():
 @app.get("/health", tags=["General"])
 def health():
     return {
-        "status":         "ok",
-        "model":          "LSTM v2",
-        "input_size":     INPUT_SIZE,
-        "seq_len":        SEQ_LEN,
-        "model_loaded":   MODEL    is not None,
-        "scaler_loaded":  SCALER   is not None,
+        "status":          "ok",
+        "model":           "LSTM v2",
+        "input_size":      INPUT_SIZE,
+        "seq_len":         SEQ_LEN,
+        "model_loaded":    MODEL    is not None,
+        "scaler_loaded":   SCALER   is not None,
         "y_scaler_loaded": Y_SCALER is not None
     }
 
@@ -232,48 +310,20 @@ def predict_7_days(
     product_id: int = Query(..., gt=0),
     store_id:   int = Query(..., gt=0)
 ):
-    """Real multi-step 7-day autoregressive forecast."""
+    """7-day autoregressive forecast."""
     log.info(f"7-day forecast: product={product_id} store={store_id}")
+    result = _run_forecast(store_id, days=7)
+    return {"product_id": product_id, "store_id": store_id, **result}
 
-    conn = get_conn()
-    cur  = conn.cursor()
-    cur.execute("""
-        SELECT MAX(sale_date) FROM aggregated_sales
-        WHERE store_id = %s
-    """, (store_id,))
-    last_date = cur.fetchone()[0]
-    cur.close()
-    conn.close()
-
-    if last_date is None:
-        raise HTTPException(status_code=404,
-                            detail=f"No data for store {store_id}")
-
-    sequence    = build_sequence(store_id)
-    forecasts   = []
-    current_seq = sequence.copy()
-
-    for day in range(7):
-        pred = run_inference(current_seq)
-        forecast_date = (pd.Timestamp(str(last_date)) +
-                         pd.Timedelta(days=int(day + 1)))
-        forecasts.append({
-            "date":             forecast_date.strftime("%Y-%m-%d"),
-            "predicted_demand": round(pred, 2),
-            "day":              day + 1
-        })
-        # Roll sequence forward
-        new_row     = current_seq[-1].copy()
-        new_row[0]  = pred              # update total_quantity
-        new_row[1]  = current_seq[-1][0]  # update lag_1
-        current_seq = np.vstack([current_seq[1:], new_row])
-
-    return {
-        "product_id":       product_id,
-        "store_id":         store_id,
-        "last_actual_date": str(last_date),
-        "forecast":         forecasts
-    }
+@app.get("/predict-90-days", tags=["Forecasting"])
+def predict_90_days(
+    product_id: int = Query(..., gt=0),
+    store_id:   int = Query(..., gt=0)
+):
+    """90-day (3-month) autoregressive forecast with weekly/monthly summary."""
+    log.info(f"90-day forecast: product={product_id} store={store_id}")
+    result = _run_forecast(store_id, days=90)
+    return {"product_id": product_id, "store_id": store_id, **result}
 
 @app.post("/predict-batch", tags=["Forecasting"])
 def predict_batch(body: BatchPredictionRequest):
@@ -322,11 +372,11 @@ def get_anomalies(limit: int = Query(10, gt=0, le=100)):
         "total": len(rows),
         "anomalies": [
             {
-                "store_id":    r[0],
-                "product_id":  r[1],
+                "store_id":     r[0],
+                "product_id":   r[1],
                 "anomaly_flag": r[2],
-                "z_score":     float(r[3]) if r[3] else None,
-                "detected_at": str(r[4])
+                "z_score":      float(r[3]) if r[3] else None,
+                "detected_at":  str(r[4])
             }
             for r in rows
         ]
@@ -338,7 +388,6 @@ def get_inventory(store_id: int = Query(..., gt=0)):
     log.info(f"Inventory request: store={store_id}")
     conn = get_conn()
     cur  = conn.cursor()
-
     cur.execute("""
         SELECT
             sale_date,
@@ -362,21 +411,16 @@ def get_inventory(store_id: int = Query(..., gt=0)):
             detail=f"No data for store {store_id}"
         )
 
-    # Overall mean for this store (used as reorder baseline)
     overall_mean = sum(float(r[1]) for r in rows) / len(rows)
 
     recommendations = []
-    for i, r in enumerate(rows):
+    for r in rows:
         sale_date    = str(r[0])
         demand       = float(r[1]) if r[1] else 0
         rolling      = float(r[2]) if r[2] else demand
         safety_stock = rolling * SAFETY_STOCK_FACTOR
         rop          = (rolling * LEAD_TIME) + safety_stock
-
-        # Reorder needed when demand drops significantly below rolling mean
-        # (indicates stockout risk in near future)
         needs_reorder = demand < (overall_mean * 0.75)
-
         recommendations.append({
             "sale_date":      sale_date,
             "current_demand": round(demand, 2),

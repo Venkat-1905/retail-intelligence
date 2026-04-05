@@ -29,4 +29,4 @@ SAFETY_STOCK_FACTOR = 0.2  # 20% of rolling mean
 # ── Dataset date range ────────────────────────────────
 DATASET_START = "2013-01-01"
 DATASET_END   = "2015-07-31"
-FORECAST_DAYS = 7
+FORECAST_DAYS = 90

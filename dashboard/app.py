@@ -55,11 +55,12 @@ def get_forecast(product_id, store_id):
                         params={"product_id": product_id,
                                 "store_id": store_id}, timeout=10).json()
 
+
 @st.cache_data(ttl=60)
-def get_7day_forecast(product_id, store_id):
-    return requests.get(f"{API}/predict-7-days",
+def get_90day_forecast(product_id, store_id):
+    return requests.get(f"{API}/predict-90-days",
                         params={"product_id": product_id,
-                                "store_id": store_id}, timeout=15).json()
+                                "store_id": store_id}, timeout=30).json()
 
 @st.cache_data(ttl=60)
 def get_inventory(store_id):
@@ -255,111 +256,172 @@ with tab2:
                 st.warning(f"Forecast error: {e}")
 
     with col_chart:
-        with st.spinner("Generating 7-day forecast..."):
+        with st.spinner("Generating 3-month forecast..."):
             try:
-                res7 = get_7day_forecast(product_id, store_id)
-                fc   = res7.get("forecast", [])
+                res90 = get_90day_forecast(product_id, store_id)
+                fc    = res90.get("daily_forecast", [])
+                monthly = res90.get("monthly_summary", [])
+                weekly  = res90.get("weekly_summary", [])
 
                 if not fc:
                     st.warning("No forecast data returned.")
                 else:
-                    # Build forecast df — use string dates throughout
-                    df_fc = pd.DataFrame(fc)
-                    fc_dates  = df_fc["date"].tolist()          # strings like "2015-08-01"
+                    # Build forecast df
+                    df_fc     = pd.DataFrame(fc)
+                    fc_dates  = df_fc["date"].tolist()
                     fc_values = df_fc["predicted_demand"].astype(float).tolist()
 
                     # Build actual df
-                    df_act = get_actual_data(store_id)
-                    act_dates  = df_act["sale_date"].dt.strftime("%Y-%m-%d").tolist() if not df_act.empty else []
-                    act_values = df_act["total_quantity"].tolist() if not df_act.empty else []
+                    df_act    = get_actual_data(store_id)
+                    act_dates  = df_act["sale_date"].dt.strftime(
+                        "%Y-%m-%d").tolist() if not df_act.empty else []
+                    act_values = df_act["total_quantity"].tolist() \
+                        if not df_act.empty else []
 
-                    # Confidence band
-                    upper = [v * 1.15 for v in fc_values]
-                    lower = [v * 0.85 for v in fc_values]
+                    # Confidence band — widens over time
+                    upper = [v * (1 + 0.002 * i) * 1.15
+                             for i, v in enumerate(fc_values)]
+                    lower = [v * (1 - 0.002 * i) * 0.85
+                             for i, v in enumerate(fc_values)]
                     band_x = fc_dates + fc_dates[::-1]
                     band_y = upper + lower[::-1]
 
-                    fig3 = go.Figure()
+                    # Tabs for different views
+                    view_tab1, view_tab2, view_tab3 = st.tabs([
+                        "📅 Daily", "📆 Weekly", "🗓️ Monthly"
+                    ])
 
-                    # Actual
-                    if act_dates:
+                    with view_tab1:
+                        fig3 = go.Figure()
+
+                        # Actual
+                        if act_dates:
+                            fig3.add_trace(go.Scatter(
+                                x=act_dates, y=act_values,
+                                name="Actual (May–Jul 2015)",
+                                line=dict(color="#1D9E75", width=2),
+                                mode="lines+markers",
+                                marker=dict(size=3)
+                            ))
+
+                        # Forecast
                         fig3.add_trace(go.Scatter(
-                            x=act_dates, y=act_values,
-                            name="Actual (May–Jul 2015)",
-                            line=dict(color="#1D9E75", width=2),
-                            mode="lines+markers",
-                            marker=dict(size=3)
+                            x=fc_dates, y=fc_values,
+                            name="90-Day Forecast",
+                            line=dict(color="#FF6B6B",
+                                      width=2, dash="dash"),
+                            mode="lines"
                         ))
 
-                    # Forecast
-                    fig3.add_trace(go.Scatter(
-                        x=fc_dates, y=fc_values,
-                        name="7-Day Forecast",
-                        line=dict(color="#FF6B6B", width=2.5, dash="dash"),
-                        mode="lines+markers",
-                        marker=dict(size=7, symbol="diamond")
-                    ))
+                        # Confidence band
+                        fig3.add_trace(go.Scatter(
+                            x=band_x, y=band_y,
+                            fill="toself",
+                            fillcolor="rgba(255,107,107,0.10)",
+                            line=dict(color="rgba(255,107,107,0)"),
+                            name="Confidence Band"
+                        ))
 
-                    # Confidence band
-                    fig3.add_trace(go.Scatter(
-                        x=band_x, y=band_y,
-                        fill="toself",
-                        fillcolor="rgba(255,107,107,0.12)",
-                        line=dict(color="rgba(255,107,107,0)"),
-                        name="±15% Confidence Band"
-                    ))
+                        # Divider
+                        fig3.add_shape(
+                            type="line",
+                            x0="2015-07-31", x1="2015-07-31",
+                            y0=0, y1=1,
+                            xref="x", yref="paper",
+                            line=dict(color="gray",
+                                      dash="dot", width=1.5)
+                        )
+                        fig3.add_annotation(
+                            x="2015-07-31", y=1,
+                            xref="x", yref="paper",
+                            text="Forecast →",
+                            showarrow=False,
+                            font=dict(color="gray", size=11),
+                            xanchor="left"
+                        )
 
-                    # Divider shape instead of vline
-                    fig3.add_shape(
-                        type="line",
-                        x0="2015-07-31", x1="2015-07-31",
-                        y0=0, y1=1,
-                        xref="x", yref="paper",
-                        line=dict(color="gray", dash="dot", width=1.5)
-                    )
-                    fig3.add_annotation(
-                        x="2015-07-31", y=1,
-                        xref="x", yref="paper",
-                        text="Forecast →",
-                        showarrow=False,
-                        font=dict(color="gray", size=11),
-                        xanchor="left"
-                    )
+                        fig3.update_layout(
+                            title=f"3-Month Daily Forecast — Store {store_id}",
+                            xaxis_title="Date",
+                            yaxis_title="Units Sold",
+                            hovermode="x unified",
+                            legend=dict(orientation="h", y=-0.25),
+                            xaxis=dict(
+                                range=["2015-05-01", "2015-10-31"],
+                                tickformat="%b %d %Y",
+                                type="date"
+                            ),
+                            yaxis=dict(rangemode="tozero")
+                        )
+                        st.plotly_chart(fig3, use_container_width=True)
 
-                    fig3.update_layout(
-                        title=f"Forecast vs Actual — Store {store_id}",
-                        xaxis_title="Date",
-                        yaxis_title="Units Sold",
-                        hovermode="x unified",
-                        legend=dict(orientation="h", y=-0.25),
-                        xaxis=dict(
-                            range=["2015-05-01", "2015-08-07"],
-                            tickformat="%b %d %Y",
-                            type="date"
-                        ),
-                        yaxis=dict(rangemode="tozero")
-                    )
-                    st.plotly_chart(fig3, use_container_width=True)
+                    with view_tab2:
+                        if weekly:
+                            df_weekly = pd.DataFrame(weekly)
+                            fig_w = px.bar(
+                                df_weekly,
+                                x="week",
+                                y="avg_demand",
+                                title=f"Weekly Avg Demand — Store {store_id}",
+                                labels={"week": "Week",
+                                        "avg_demand": "Avg Daily Demand"},
+                                color="avg_demand",
+                                color_continuous_scale="Teal",
+                                text="avg_demand"
+                            )
+                            fig_w.update_traces(
+                                texttemplate="%{text:,.0f}",
+                                textposition="outside"
+                            )
+                            st.plotly_chart(fig_w,
+                                            use_container_width=True)
+                            st.dataframe(df_weekly,
+                                         use_container_width=True,
+                                         hide_index=True)
 
-                    # Forecast table
-                    st.markdown("**7-Day Forecast Table**")
-                    df_table = pd.DataFrame({
-                        "Day":              df_fc["day"].tolist(),
-                        "Date":             fc_dates,
-                        "Predicted Demand": [f"{v:,.2f}" for v in fc_values]
-                    })
-                    st.dataframe(df_table, use_container_width=True,
-                                 hide_index=True)
+                    with view_tab3:
+                        if monthly:
+                            df_monthly = pd.DataFrame(monthly)
+                            fig_m = px.bar(
+                                df_monthly,
+                                x="month",
+                                y=["avg_demand", "total_demand"],
+                                title=f"Monthly Forecast — Store {store_id}",
+                                labels={"month": "Month",
+                                        "value": "Units",
+                                        "variable": "Metric"},
+                                barmode="group",
+                                color_discrete_map={
+                                    "avg_demand":   "#1D9E75",
+                                    "total_demand": "#534AB7"
+                                }
+                            )
+                            st.plotly_chart(fig_m,
+                                            use_container_width=True)
 
+                            # Monthly summary table
+                            df_monthly["avg_demand"] = df_monthly[
+                                "avg_demand"].apply(lambda x: f"{x:,.2f}")
+                            df_monthly["total_demand"] = df_monthly[
+                                "total_demand"].apply(lambda x: f"{x:,.2f}")
+                            df_monthly.columns = [
+                                "Month", "Start Date", "End Date",
+                                "Avg Daily Demand", "Total Demand"
+                            ]
+                            st.dataframe(df_monthly,
+                                         use_container_width=True,
+                                         hide_index=True)
+
+                    # Download full forecast
                     st.download_button(
-                        "⬇️ Download Forecast",
+                        "⬇️ Download 90-Day Forecast",
                         df_fc.to_csv(index=False),
-                        f"forecast_store{store_id}.csv", "text/csv"
+                        f"forecast_90day_store{store_id}.csv",
+                        "text/csv"
                     )
 
             except Exception as e:
-                st.warning(f"7-day forecast error: {e}")
-
+                st.warning(f"Forecast error: {e}")
 # ════════════════════════════════════════════════════
 # TAB 3 — ANOMALIES
 # ════════════════════════════════════════════════════

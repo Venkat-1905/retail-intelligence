@@ -14,7 +14,7 @@ LOCAL = {
 # ── Supabase DB — reads from env vars for security ────
 SUPABASE = {
     "host":            os.getenv("DB_HOST", "aws-1-ap-southeast-1.pooler.supabase.com"),
-    "port":            int(os.getenv("DB_PORT", 6543)),
+    "port":            int(os.getenv("DB_PORT", 5432)),
     "database":        os.getenv("DB_NAME", "postgres"),
     "user":            os.getenv("DB_USER", "postgres.rlnmjtjffdhjxjeuxusa"),
     "password":        os.getenv("DB_PASSWORD", ""),
@@ -78,50 +78,62 @@ def migrate():
     remote_conn.commit()
     print("Tables created ✅")
 
-    # ── Migrate aggregated_sales (top 50 stores) ──────
-    print("\nMigrating aggregated_sales (top 50 stores)...")
+    # ── Migrate ALL aggregated_sales (all 1115 stores) ──
+    print("\nMigrating aggregated_sales (all stores)...")
+
+    # Clear existing data first to avoid duplicates
+    print("  Clearing existing Supabase data...")
+    remote_cur.execute("TRUNCATE aggregated_sales;")
+    remote_conn.commit()
+
     local_cur.execute("""
         SELECT sale_date, store_id, product_id,
                total_quantity, total_revenue,
                lag_1, lag_7, rolling_mean_7,
                avg_price, promo_flag, day_of_week
         FROM aggregated_sales
-        WHERE store_id IN (
-            SELECT store_id FROM aggregated_sales
-            GROUP BY store_id
-            ORDER BY SUM(total_quantity) DESC
-            LIMIT 50
-        )
         ORDER BY store_id, sale_date
     """)
     rows = local_cur.fetchall()
     print(f"  Fetched {len(rows):,} rows from local DB")
 
-    execute_batch(remote_cur, """
-        INSERT INTO aggregated_sales
-            (sale_date, store_id, product_id,
-             total_quantity, total_revenue,
-             lag_1, lag_7, rolling_mean_7,
-             avg_price, promo_flag, day_of_week)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-    """, rows, page_size=500)
-    remote_conn.commit()
-    print(f"  Migrated {len(rows):,} rows ✅")
+    # Insert in batches of 1000 with progress updates
+    batch_size = 1000
+    total      = len(rows)
+    for i in range(0, total, batch_size * 50):
+        batch = rows[i: i + batch_size * 50]
+        execute_batch(remote_cur, """
+            INSERT INTO aggregated_sales
+                (sale_date, store_id, product_id,
+                 total_quantity, total_revenue,
+                 lag_1, lag_7, rolling_mean_7,
+                 avg_price, promo_flag, day_of_week)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, batch, page_size=1000)
+        remote_conn.commit()
+        print(f"  Progress: {min(i + batch_size * 50, total):,} / {total:,} rows")
 
-    # ── Migrate anomalies (top 10k by z-score) ────────
+    print(f"  Migrated {total:,} rows ✅")
+
+    # ── Migrate anomalies (all flagged) ───────────────
     print("\nMigrating anomalies...")
+
+    # Clear existing anomalies
+    remote_cur.execute("TRUNCATE anomalies;")
+    remote_conn.commit()
+
     local_cur.execute("""
         SELECT store_id, product_id, anomaly_flag, z_score
         FROM anomalies
         WHERE anomaly_flag = true
         ORDER BY z_score DESC
-        LIMIT 10000
+        LIMIT 50000
     """)
     anom_rows = local_cur.fetchall()
     execute_batch(remote_cur, """
         INSERT INTO anomalies (store_id, product_id, anomaly_flag, z_score)
         VALUES (%s,%s,%s,%s)
-    """, anom_rows, page_size=500)
+    """, anom_rows, page_size=1000)
     remote_conn.commit()
     print(f"  Migrated {len(anom_rows):,} anomalies ✅")
 
@@ -134,7 +146,7 @@ def migrate():
     print("\n" + "="*50)
     print("Migration complete! ✅")
     print("="*50)
-    print(f"  aggregated_sales: {len(rows):,} rows")
+    print(f"  aggregated_sales: {total:,} rows")
     print(f"  anomalies:        {len(anom_rows):,} rows")
 
 if __name__ == "__main__":
