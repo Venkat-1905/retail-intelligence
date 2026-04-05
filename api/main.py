@@ -11,7 +11,8 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
-sys.path.insert(0, '/home/venkat/retail-intelligence/models')
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models'))
 from lstm_forecaster import LSTMForecaster
 from api.config import (
     DB_CONFIG, MODEL_PATH, SCALER_PATH, Y_SCALER_PATH,
