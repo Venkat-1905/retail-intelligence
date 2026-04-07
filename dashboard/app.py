@@ -8,12 +8,27 @@ import os
 from datetime import datetime, timedelta
 
 # ── Config ────────────────────────────────────────────
-API     = os.getenv("API_URL", "http://localhost:8000")
-DB_CONN = {
-    "host": "localhost", "port": 5432,
-    "database": "retail_db",
-    "user": "retail_user", "password": "retail_pass"
-}
+# Works both locally and on Streamlit Cloud
+API = os.getenv("API_URL", "http://localhost:8000")
+try:
+    API = st.secrets["API_URL"]
+except Exception:
+    pass
+
+try:
+    DB_CONN = {
+        "host":     st.secrets["DB_HOST"],
+        "port":     int(st.secrets["DB_PORT"]),
+        "database": st.secrets["DB_NAME"],
+        "user":     st.secrets["DB_USER"],
+        "password": st.secrets["DB_PASSWORD"],
+    }
+except Exception:
+    DB_CONN = {
+        "host": "localhost", "port": 5432,
+        "database": "retail_db",
+        "user": "retail_user", "password": "retail_pass"
+    }
 
 DATASET_START = datetime(2013, 1, 1).date()
 DATASET_END   = datetime(2015, 7, 31).date()
