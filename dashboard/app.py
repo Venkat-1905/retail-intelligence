@@ -57,30 +57,30 @@ st.markdown("""
 # ── Cached fetchers ───────────────────────────────────
 @st.cache_data(ttl=60)
 def get_summary():
-    return requests.get(f"{API}/sales-summary", timeout=5).json()
+    return requests.get(f"{API}/sales-summary", timeout=60).json()
 
 @st.cache_data(ttl=60)
 def get_anomalies(limit):
     return requests.get(f"{API}/get-anomalies",
-                        params={"limit": limit}, timeout=5).json()
+                        params={"limit": limit}, timeout=60).json()
 
 @st.cache_data(ttl=60)
 def get_forecast(product_id, store_id):
     return requests.get(f"{API}/predict-demand",
                         params={"product_id": product_id,
-                                "store_id": store_id}, timeout=10).json()
+                                "store_id": store_id}, timeout=60).json()
 
 
 @st.cache_data(ttl=60)
 def get_90day_forecast(product_id, store_id):
     return requests.get(f"{API}/predict-90-days",
                         params={"product_id": product_id,
-                                "store_id": store_id}, timeout=30).json()
+                                "store_id": store_id}, timeout=120).json()
 
 @st.cache_data(ttl=60)
 def get_inventory(store_id):
     return requests.get(f"{API}/get-inventory-recommendations",
-                        params={"store_id": store_id}, timeout=5).json()
+                        params={"store_id": store_id}, timeout=60).json()
 
 @st.cache_data(ttl=120)
 def get_sales_trend(store_id, start_date, end_date):
